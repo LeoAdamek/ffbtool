@@ -1,0 +1,10 @@
+{
+    "name": "ffbtool",
+    "version-string": "0.0.1",
+    "license": "MIT",
+    "dependencies": [
+        "hidapi",
+        "spdlog",
+        "fmt"
+    ]
+}
