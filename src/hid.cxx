@@ -1,9 +1,10 @@
 #include "hid.hxx"
 
-#include <hidapi.h>
+#include <map>
+#include <thread>
 #include <wchar.h>
 
-#include <chrono>
+#include <hidapi.h>
 
 #if _WIN32
     #include <hidapi_winapi.h>
@@ -14,140 +15,72 @@
 
 namespace HID {
 
-    InitResult Init(void) {
-        if (hid_init()) {
-            return InitResult::ERROR_UNDEFINED;
-        }
+    DeviceManager::~DeviceManager() {
+        if (this->devices != nullptr) {
+            hid_free_enumeration(this->devices);
+            this->devices = nullptr;
+            this->initialized = false;
 
-        return InitResult::SUCCESS;
-    }
-
-    std::vector<Device> ListDevices(void) {
-        return ListDevices(nullptr);
-    }
-
-    std::vector<Device> ListDevices(DeviceFilterPredicate filter) {
-        
-        std::string buffer;
-        std::wstring wstr;
-        hid_device *handle;
-
-        std::vector<Device> devs;
-
-        // Enumerate all devices
-        auto devices = hid_enumerate(0x00, 0x00);
-        for(auto device = devices->next; device; device = device->next) {
-            if ( filter == nullptr || filter(device)) {
-                Device dev(device->path);
-                dev.vendor_id = device->vendor_id;
-                dev.product_id = device->product_id;
-                dev.product_name = std::wstring(device->product_string);
-                dev.vendor_name = std::wstring(device->manufacturer_string);
-                dev.product_serial = std::wstring(device->product_string);
-
-                devs.push_back(dev);
+            for (auto dev : this->handles) {
+                hid_close(dev.second->device);
+                free(dev.second);
+                //this->handles.erase(dev.first);
             }
         }
-
-        hid_free_enumeration(devices);
-
-        return devs;
     }
 
-    namespace Filters {
-        bool HasFFB(hid_device_info *device) {
-            return device->usage_page == HID::UsagePage::PID;
+    const hid_device_info * DeviceManager::get_devices() {
+        if (!this->initialized) {
+            this->init();
         }
 
+        return this->devices;
     }
 
-    Device::Device(const char *path) {
-        this->path = std::string(path);
+    void DeviceManager::init() {
+        hid_init();
+        //devices = hid_enumerate(0x16d0, 0x0d60);
+        devices = hid_enumerate(0x00, 0x00);
 
-        this->bufferSz = 256;
-        this->current_buffer = 0;
-        
-        for (auto i = 0; i < NUM_BUFFERS; i++) {
-            this->input_buffers[i] = (unsigned char*)malloc(this->bufferSz);
-            memset(this->input_buffers[i], 0, this->bufferSz);
-        }
-    }
+        for (auto device = devices; device; device = device->next) {
+            hid_device *handle = hid_open_path(device->path);
+            DeviceInfo *dev = (DeviceInfo*)malloc(sizeof(DeviceInfo));
 
-    Device::~Device() {
-        /*
-        for (auto i = 0; i < NUM_BUFFERS; i++) {
-            auto buffer = this->input_buffers[i];
+            dev->device = handle;
 
-            if (buffer != NULL) free(this->input_buffers[i]);
-            this->input_buffers[i] = NULL;
-        }
-        */
-    }
+            handles.emplace(device->path, dev);
 
-    const unsigned char * Device::GetInput() {
-        return this->input_buffers[this->current_buffer];
-    }
-
-    std::thread Device::SpawnReader(bool *done) {
-        if (!this->IsOpen()) {
-            this->Open();
-        }
-
-        return std::thread([this]() {
-            while(true) {
-                this->readNext();
+            for (auto i = 0; i < NUM_BUFFERS; i++) {
+                memset(dev->buffers[i], 0, BUFFER_SIZE);
             }
-        });
-    }
 
-    uint8_t Device::readNext() {
-        // Advance and roll over the buffer
-        if (++this->current_buffer % NUM_BUFFERS == 0) {
-            this->current_buffer = 0;
+            readers.emplace_back(std::thread(&DeviceManager::readLoop, this, dev));
         }
 
-        unsigned char *buffer = this->input_buffers[this->current_buffer];
 
-        // Reset the buffer
-        memset(buffer, 0, this->bufferSz);
-
-        hid_read_timeout(this->handle, buffer, this->bufferSz, 250);
-
-        // Return the current buffer index
-        return this->current_buffer;
+        initialized = true;
     }
 
-    size_t Device::Read(char *buffer, size_t size) {
+    hid_device* DeviceManager::open_device(const hid_device_info *device) {
+        std::map<char*, DeviceInfo*>::iterator it = this->handles.find(device->path);
+        return it->second->device;
+    }
 
-        if (!this->IsOpen()) {
-            this->Open();
+    const unsigned char * DeviceManager::get_latest_report(const hid_device_info *device) {
+        std::map<char*, DeviceInfo*>::iterator it = this->handles.find(device->path);
+        return it->second->buffers[it->second->current_buffer];
+    }
+
+    void DeviceManager::readLoop(DeviceInfo *device) {
+        while(true) {
+            auto next_buffer = device->current_buffer + 1;
+            if (next_buffer > NUM_BUFFERS) next_buffer = 0;
+            size_t l = hid_read_timeout(device->device, device->buffers[next_buffer], HID::BUFFER_SIZE, 500);
+            device->current_buffer = next_buffer;
+
+            if (l > 0) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            }
         }
-
-        return hid_read_timeout(this->handle, (unsigned char*)buffer, size, 100);
     }
-
-    inline bool Device::IsOpen(void) {
-        return this->handle != nullptr;
-    }
-
-    bool Device::Open(void) {
-        if (!this->path.empty()) {
-            this->handle = hid_open_path(this->path.c_str());
-            hid_set_nonblocking(this->handle, 1);
-            return this->handle != nullptr;
-        }
-
-        this->handle = hid_open(this->vendor_id, this->product_id, NULL);
-        return this->handle != nullptr;
-    }
-
-    bool Device::Close(void) {
-        if (this->handle != nullptr) {
-            hid_close(this->handle);
-            return true;
-        }
-        
-        return false;
-    }
-
 }

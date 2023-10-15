@@ -19,7 +19,9 @@ file(
 )
 
 if (WIN32)
+    # Add the Win32 platform-specific implementations
     list(APPEND FFBTOOL_SOURCES "src/ui/ui_win32.cxx" "src/ui/imgui/imgui_impl_dx11.cpp" "src/ui/imgui/imgui_impl_win32.cpp")
+
 endif ()
 
 add_executable(ffbtool ${FFBTOOL_SOURCES})

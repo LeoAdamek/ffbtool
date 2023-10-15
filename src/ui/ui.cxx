@@ -1,77 +1,73 @@
 #include <vector>
-#include <thread>
-#include <chrono>
-#include <atomic>
-#include <future>
 #include <locale>
-#include <set>
 #include <codecvt>
 
 #include <fmt/format.h>
-#include <spdlog/spdlog.h>
 
 #include "ui.hxx"
 #include "../hid.hxx"
 #include "imgui/imgui.h"
 
-void RenderMainMenu();
+#define KV_PAIR(label, fmt, ...) \
+	ImGui::TableNextColumn(); \
+	ImGui::Text(label); \
+	ImGui::TableNextColumn(); \
+	ImGui::Text(fmt, __VA_ARGS__);
+
 inline void RenderHex(const char *data, size_t dataSz);
 
 static struct {
-    std::vector<HID::Device> devices;
-    std::set<uint32_t> selected;
-    char **device_labels;
-
     struct {
-        bool debug = false;
-        bool imgui_demo = false;
-        bool imgui_debug = false;
+        bool imgui_demo;
+        bool imgui_debug;
     } main_menu;
 
     struct {
-        bool shown;
+       bool shown = true ;
     } device_list;
 
     struct {
-        uint32_t idx;
-        uint16_t usage_page;
-        uint16_t usage;
-        uint8_t data[256];
-        uint8_t dptr;
-    } samples[32];
+        bool shown = false ;
+    } device_debugger;
 
+    std::map<char*, bool> shown_devices;
 } state;
 
 std::string w2s(const std::wstring& in);
 
-void RenderDeviceWindow(uint32_t idx);
+// Window rendering functions
+inline void RenderDeviceList();
+inline void RenderDeviceDebugger();
+inline void RenderDevice(const hid_device_info *device, bool *open);
 
 void UI::Render() {
 
-    ImGuiViewport *vp = ImGui::GetMainViewport();
-    //ImGui::SetNextWindowPos(ImVec2(0, 17));
-    //ImGui::SetNextWindowSize(ImVec2(256, vp->Size.y - 17));
-
-    if (state.devices.empty()) {
-        state.devices = HID::ListDevices();
-        auto devicesSz = state.devices.size();
-
-        state.device_labels = (char**)calloc(devicesSz, sizeof(char*));
-
-        for (auto i = 0; i < devicesSz; i++) {
-            auto device = state.devices.at(i);
-            std::string product_name = w2s(device.product_name);
-
-            state.device_labels[i] = (char*)malloc(256);
-            sprintf_s(state.device_labels[i], 256, "(%04x:%04x) %s", device.vendor_id, device.product_id, product_name.c_str());
+    if (state.shown_devices.empty()) {
+        for (auto device = HID::GlobalDeviceManager.get_devices(); device; device = device->next) {
+            state.shown_devices.emplace(device->path, false);
         }
     }
 
+    RenderDeviceList();
+    if (state.device_debugger.shown) RenderDeviceDebugger();
+
+    if (state.main_menu.imgui_demo) ImGui::ShowDemoWindow(&state.main_menu.imgui_demo);
+    if (state.main_menu.imgui_debug) ImGui::ShowMetricsWindow(&state.main_menu.imgui_debug);
+}
+
+inline void RenderDeviceList() {
+    ImGuiViewport *vp = ImGui::GetMainViewport();
     static ImGuiWindowFlags flags = NULL;
 
     if (ImGui::Begin("Device List", &state.device_list.shown, flags)) {
 
         if (ImGui::BeginMainMenuBar()) {
+            if (ImGui::BeginMenu("Devices")) {
+                ImGui::MenuItem("Device List", "", &state.device_list.shown);
+                ImGui::MenuItem("Device Debugger", "", &state.device_debugger.shown);
+                ImGui::EndMenu();
+            }
+
             if (ImGui::BeginMenu("Debug")) {
                 ImGui::MenuItem("ImGui Debug", "", &state.main_menu.imgui_debug);
                 ImGui::MenuItem("ImGui Demo", "", &state.main_menu.imgui_demo);
@@ -80,64 +76,71 @@ void UI::Render() {
             ImGui::EndMainMenuBar();
         }
 
-        for (auto i = 0; i < state.devices.size(); i++) {
-            if (ImGui::Selectable(state.device_labels[i], state.selected.contains(i))) {
-                state.selected.emplace(i);
+        ImVec2 wsz = ImGui::GetWindowSize();
+
+        if (ImGui::Button("Open All", ImVec2(wsz.y, 16))) {
+            for (auto s : state.shown_devices) {
+                s.second = true;
             }
         }
 
-        for (auto idx : state.selected ) {
-            RenderDeviceWindow(idx);
+        for (auto device = HID::GlobalDeviceManager.get_devices(); device; device = device->next) {
+            char label[512];
+            sprintf_s(label, "%ls #%d  ##%s", device->product_string, device->interface_number, device->path);
+
+            auto shown = state.shown_devices.find(device->path);
+            ImGui::Selectable(label, &shown->second);
+            if (shown->second) RenderDevice(device, &shown->second);
         }
     }
-
-    if (state.main_menu.imgui_demo) ImGui::ShowDemoWindow(&state.main_menu.imgui_demo);
-    if (state.main_menu.imgui_debug) ImGui::ShowMetricsWindow(&state.main_menu.imgui_debug);
-
     ImGui::End();
 }
 
+inline void RenderDeviceDebugger() {
+    if (ImGui::Begin("Device Debugger", &state.device_debugger.shown)) {
+        const hid_device_info *devices = HID::GlobalDeviceManager.get_devices();
 
-void RenderDeviceWindow(uint32_t idx) {
-    const char* label = state.device_labels[idx];
-    HID::Device device = state.devices.at(idx);
+        for (auto device = devices; device; device = device->next) {
+            char device_name[512];
+            sprintf_s(device_name, "%ls ##%s", device->product_string, device->path);
 
-    static int report_id = 0;
-    static int bufferSz = 256;
+            if (ImGui::TreeNode(device_name)) {
+                
+                if (ImGui::TreeNode("Device Info")) {
+                    if (ImGui::BeginTable("device_info", 2, ImGuiTableFlags_RowBg | ImGuiTableFlags_Borders | ImGuiTableFlags_Resizable )) {
+                        KV_PAIR("Vendor ID", "0x%04x", device->vendor_id);
+                        KV_PAIR("Product ID", "0x%04x", device->product_id);
+                        KV_PAIR("Manufacturer String", "%ls", device->manufacturer_string);
+                        KV_PAIR("Product String", "%ls", device->product_string);
+                        KV_PAIR("Serial Number", "%ls", device->serial_number);
+                        KV_PAIR("Path", "%s", device->path);
+                        KV_PAIR("Usage Page", "0x%04x", device->usage_page);
+                        KV_PAIR("Usage", "0x%04x", device->usage);
+                        KV_PAIR("Interface #", "0x%04x", device->interface_number);
+                        KV_PAIR("Release #", "0x%04x", device->release_number)
+                        ImGui::EndTable();   
+                    }
+                    ImGui::TreePop();
+                }
 
-    //ImGui::SetNextWindowSize(ImVec2(480, 256));
-
-    if (ImGui::Begin(label)) {
-        char *buffer = (char*)malloc(bufferSz);
-        memset(buffer, 0, bufferSz);
-
-        ImGui::InputInt("Report ID", &report_id, 1);
-        ImGui::InputInt("Report Length", &bufferSz, 1);
-        buffer[0] = report_id;
-        size_t reportSz = device.Read(buffer, bufferSz);
+                ImGui::TreePop();
+            };
+        }
         
-        ImGui::Separator();
-
-        ImGui::Text("Report Length: %zu", reportSz);
-
-        RenderHex(buffer, reportSz);
-
-        auto samples = &state.samples[idx];
-        uint8_t *data = samples->data;
-
-        data[samples->dptr++] = buffer[0x01];
-        data[samples->dptr++] = buffer[0x02];
-        
-        ImGui::NewLine();
-        ImGui::SeparatorText("Sample Data");
-        RenderHex((char*)data, 256);
-
-        free(buffer);
     }
-
     ImGui::End();
 }
 
+
+inline void RenderDevice(const hid_device_info *device, bool *open) {
+    char title[512];
+    sprintf_s(title, "%ls %ls #%d ##%s", device->manufacturer_string, device->product_string, device->interface_number, device->path);
+    if (ImGui::Begin(title, open)) {
+        const unsigned char *data = HID::GlobalDeviceManager.get_latest_report(device);
+        RenderHex((const char*)data, 64);
+    }
+    ImGui::End();
+}
 
 std::string w2s(const std::wstring& in) {
     using convert_type = std::codecvt_utf8<wchar_t>;

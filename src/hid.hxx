@@ -1,7 +1,8 @@
 #pragma once
 
-#include <vector>
+#include <map>
 #include <string>
+#include <vector>
 #include <thread>
 
 #include <hidapi.h>
@@ -40,64 +41,32 @@ namespace HID {
         ERROR_UNDEFINED
     } InitResult;
 
-
     const uint8_t NUM_BUFFERS = 4;
+    const size_t BUFFER_SIZE  = 256;
 
-    class Device {
-    public:
-        Device(const char*);
-        ~Device();
-        uint16_t vendor_id;
-        uint16_t product_id;
-        hid_device *handle = nullptr;
-
-        std::wstring product_serial;
-        std::wstring vendor_name;
-        std::wstring product_name;
-
-        size_t Read(char *buffer, size_t buffer_sz);
-
-        bool IsOpen(void);
-        bool Open(void);
-        bool Close(void);
-
-        std::thread SpawnReader(bool *done);
-
-        const unsigned char* GetInput(void);
-    private:
-        std::string path;
-        uint32_t id;
-
-        /**
-         * Data is read into a series of buffers so that each buffer remains static for multiple read cycles.
-         * Giving consuming applications more time to use, or copy, the input data without it changing as it is being read.
-        */
-        unsigned char *input_buffers[NUM_BUFFERS];
-        size_t bufferSz;
+    typedef struct {
+        hid_device *device;    
         uint8_t current_buffer;
+        unsigned char buffers[NUM_BUFFERS][BUFFER_SIZE];
+        size_t buffer_length[NUM_BUFFERS];
+    } DeviceInfo;
 
-        uint8_t readNext();
+    class DeviceManager {
+        public:
+            ~DeviceManager();
+            const hid_device_info* get_devices(void);
+            const unsigned char * get_latest_report(const hid_device_info *device);
+            hid_device* open_device(const hid_device_info *device);
+        private:
+            hid_device_info *devices;
+            size_t device_count;
+            std::map<char*,DeviceInfo*> handles;
+            std::vector<std::thread> readers;
+
+            bool initialized;
+            void init();
+            void readLoop(DeviceInfo *device);
     };
 
-    InitResult Init(void);
-
-    /**
-     * DeviceFilterPredicate is a function which takes an `hid_device_info*`
-     * and returns a boolean. Used to filter devices returned by `ListDevices`
-    */
-    typedef bool (*DeviceFilterPredicate)(hid_device_info *device);
-
-    /**
-     * List devices matching the given predicate function.
-    */
-    std::vector<Device> ListDevices(DeviceFilterPredicate);
-
-    /**
-     * List all devices.
-    */
-    std::vector<Device> ListDevices(void);
-
-    namespace Filters {
-        bool HasFFB(hid_device_info*);        
-    }
+    static DeviceManager GlobalDeviceManager;
 }

@@ -1,22 +1,16 @@
-#include <spdlog/spdlog.h>
+#include <thread>
 
 #include "hid.hxx"
 #include "ui/ui.hxx"
 
 int main(const int argc, const char **argv) {
-    HID::InitResult result = HID::Init();
-
-    if (result != HID::InitResult::SUCCESS) {
-        spdlog::critical("Unable to initialize HID. Exiting");
-        return 1;
-    }
+    const hid_device_info *devices = HID::GlobalDeviceManager.get_devices();
 
     if (UI::InitializeBackend()) {
         UI::Loop();
-        return 0;
     }
 
-    spdlog::critical("Unable to initialize GUI backend");
+    std::terminate();
 
-    return 1;
+    return 0;
 }
