@@ -7,6 +7,7 @@
 
 #include <d3d11.h>
 #include <Windows.h>
+#include <WinUser.h>
 
 static ID3D11Device* d3dDevice = nullptr;
 static ID3D11DeviceContext* d3dDeviceContext = nullptr;
@@ -17,7 +18,6 @@ static ID3D11RenderTargetView* mainRenderTargetView = nullptr;
 static bool done;
 static WNDCLASSEXW wc;
 static HWND handle;
-static ImGuiContext* context;
 
 bool CreateDeviceD3D(HWND handle);
 void CleanupDeviceD3D();
@@ -35,22 +35,22 @@ static State state;
 
 void Render();
 
-Ui::InitResult Ui::Startup() {
+bool UI::InitializeBackend() {
 	wc = { sizeof(wc), CS_CLASSDC, WndProc, 0L, 0L, GetModuleHandle(nullptr), nullptr, nullptr, nullptr, nullptr, L"Simutrain Console", nullptr };
 	::RegisterClassExW(&wc);
-	handle = ::CreateWindowW(wc.lpszClassName, L"Simutrian Console", WS_OVERLAPPEDWINDOW, 100, 100, INITIAL_WIDTH, INITIAL_HEIGHT, nullptr, nullptr, wc.hInstance, nullptr);
+	handle = ::CreateWindowW(wc.lpszClassName, L"FFB Tool", WS_OVERLAPPEDWINDOW, 100, 100, WINDOW_INITIAL_WIDTH, WINDOW_INITIAL_HEIGHT, nullptr, nullptr, wc.hInstance, nullptr);
 
 	if (!CreateDeviceD3D(handle)) {
 		CleanupDeviceD3D();
 		::UnregisterClassW(wc.lpszClassName, wc.hInstance);
-		return Ui::InitResult::ERR_D3D_FAILURE;
+        return false;
 	}
 
 	::ShowWindow(handle, SW_SHOWDEFAULT);
 	::UpdateWindow(handle);
 
     IMGUI_CHECKVERSION();
-    context = ImGui::CreateContext();
+    UI::context = ImGui::CreateContext();
     ImGuiIO& io = ImGui::GetIO(); (void)io;
 
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
@@ -59,8 +59,7 @@ Ui::InitResult Ui::Startup() {
 
     ImGui_ImplWin32_Init(handle);
     ImGui_ImplDX11_Init(d3dDevice, d3dDeviceContext);
-
-	return Ui::InitResult::UI_INIT_OK;
+    return true;
 }
 
 
@@ -107,8 +106,8 @@ bool CreateDeviceD3D(HWND hWnd) {
     DXGI_SWAP_CHAIN_DESC sd;
     ZeroMemory(&sd, sizeof(sd));
     sd.BufferCount = 2;
-    sd.BufferDesc.Width = INITIAL_WIDTH;
-    sd.BufferDesc.Height = INITIAL_HEIGHT;
+    sd.BufferDesc.Width  = WINDOW_INITIAL_WIDTH;
+    sd.BufferDesc.Height = WINDOW_INITIAL_HEIGHT;
     sd.BufferDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
     sd.BufferDesc.RefreshRate.Numerator = 120;
     sd.BufferDesc.RefreshRate.Denominator = 1;
@@ -160,13 +159,14 @@ bool CreateDeviceD3D(HWND hWnd) {
             &featureLevel, 
             &d3dDeviceContext
 		);
+
     if (res != S_OK)
         return false;
 
     return true;
 }
 
-void Ui::Teardown() {
+void UI::TeardownBackend() {
 
     ImGui_ImplDX11_Shutdown();
     ImGui_ImplWin32_Shutdown();
@@ -200,7 +200,7 @@ void CleanupRenderTarget()
 }
 
 
-void Ui::Loop() {
+void UI::Loop() {
 
 	while (!done) {
 		MSG msg;
@@ -230,7 +230,7 @@ void Ui::Loop() {
 		ImGui_ImplWin32_NewFrame();
 		ImGui::NewFrame();
 
-        Render();
+        UI::Render();
 
         // Render the frame
         const float clear_color_with_alpha[4] = { clear_color.x * clear_color.w, clear_color.y * clear_color.w, clear_color.z * clear_color.w, clear_color.w };
@@ -241,7 +241,7 @@ void Ui::Loop() {
         ImDrawData* drawData = ImGui::GetDrawData();
         
         ImGui_ImplDX11_RenderDrawData(drawData);
-        d3dSwapChain->Present(0, 0);
+        d3dSwapChain->Present(1, 0);
 	}
 }
 

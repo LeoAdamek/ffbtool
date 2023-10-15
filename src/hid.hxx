@@ -2,6 +2,7 @@
 
 #include <vector>
 #include <string>
+#include <thread>
 
 #include <hidapi.h>
 
@@ -39,21 +40,43 @@ namespace HID {
         ERROR_UNDEFINED
     } InitResult;
 
+
+    const uint8_t NUM_BUFFERS = 4;
+
     class Device {
     public:
+        Device(const char*);
+        ~Device();
         uint16_t vendor_id;
         uint16_t product_id;
+        hid_device *handle = nullptr;
 
+        std::wstring product_serial;
         std::wstring vendor_name;
         std::wstring product_name;
 
-        std::string Read(size_t size);
+        size_t Read(char *buffer, size_t buffer_sz);
 
         bool IsOpen(void);
         bool Open(void);
         bool Close(void);
+
+        std::thread SpawnReader(bool *done);
+
+        const unsigned char* GetInput(void);
     private:
-        hid_device *handle = nullptr;
+        std::string path;
+        uint32_t id;
+
+        /**
+         * Data is read into a series of buffers so that each buffer remains static for multiple read cycles.
+         * Giving consuming applications more time to use, or copy, the input data without it changing as it is being read.
+        */
+        unsigned char *input_buffers[NUM_BUFFERS];
+        size_t bufferSz;
+        uint8_t current_buffer;
+
+        uint8_t readNext();
     };
 
     InitResult Init(void);
