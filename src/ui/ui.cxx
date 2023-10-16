@@ -3,6 +3,7 @@
 #include <codecvt>
 
 #include <fmt/format.h>
+#include <fmt/chrono.h>
 
 #include "ui.hxx"
 #include "../hid.hxx"
@@ -136,8 +137,23 @@ inline void RenderDevice(const hid_device_info *device, bool *open) {
     char title[512];
     sprintf_s(title, "%ls %ls #%d ##%s", device->manufacturer_string, device->product_string, device->interface_number, device->path);
     if (ImGui::Begin(title, open)) {
-        const unsigned char *data = HID::GlobalDeviceManager.get_latest_report(device);
-        RenderHex((const char*)data, 64);
+        HID::GlobalDeviceManager.get_update_rate(device);
+        const HID::DeviceBuffer *data = HID::GlobalDeviceManager.get_latest_report(device);
+        ImGui::TextUnformatted( fmt::format("Report Date: {}", data->lru).c_str() );
+        ImGui::Text("Report Length: %d", data->length);
+        ImGui::Spacing();
+
+        if (ImGui::CollapsingHeader("Raw Data")) RenderHex((const char*)data->buffer, data->length);
+
+        ImGui::NewLine();
+
+        if (ImGui::CollapsingHeader("Value Series")) {
+            for (auto i = 0; i < data->length; i++) {
+                int value = (int)data->buffer[i] | (int)(data->buffer[++i]) << 8;
+
+                ImGui::SliderInt(fmt::format("{:04x}", i).c_str(), &value, 0, 0xFFFF, "%05d", ImGuiSliderFlags_NoInput);
+            }
+        }
     }
     ImGui::End();
 }
