@@ -16,9 +16,17 @@
 	ImGui::TableNextColumn(); \
 	ImGui::Text(fmt, __VA_ARGS__);
 
+#define INPUT_ID(VD_ID, PR_ID, RP_ID, RP_X) \
+    (((uint64_t) VD_ID << 48) | ((uint64_t)PR_ID << 32) | ((uint16_t)RP_ID << 16) | ((uint16_t)RP_X))
+
 inline void RenderHex(const char *data, size_t dataSz);
 
+const uint8_t label_length = 0xFF;
+
 struct {
+
+    char save_path[256];
+
     struct {
         bool imgui_demo;
         bool imgui_debug;
@@ -33,6 +41,8 @@ struct {
     } device_debugger;
 
     std::map<char*, bool> shown_devices;
+
+    std::map<uint64_t, std::pair<uint8_t,char*>> input_names;
 } state;
 
 std::string w2s(const std::wstring& in);
@@ -42,14 +52,34 @@ inline void RenderDeviceList();
 inline void RenderDeviceDebugger();
 inline void RenderDevice(const hid_device_info *device, bool *open);
 
-void UI::Render() {
-
-    if (state.shown_devices.empty()) {
-        for (auto device = HID::GlobalDeviceManager.get_devices(); device; device = device->next) {
-            state.shown_devices.emplace(device->path, false);
-        }
+void UI::Setup() {
+    for (auto device = HID::GlobalDeviceManager.get_devices(); device; device = device->next) {
+        state.shown_devices.emplace(device->path, false);
     }
 
+    // Load the labels
+    FILE *labels = fopen("labels.dat", "r");
+
+    uint64_t input_id;
+    uint8_t input_length;
+    char *input_name;
+
+    bool eof = false;
+
+    if (labels) {
+        while(true) {
+            if (fread(&input_id, 8, 1, labels) != 1) break;
+            if (fread(&input_length, 1, 1, labels) != 1) break;
+            input_name = (char*)malloc(label_length);
+            memset(input_name, 0, label_length);
+            if (fread(input_name, sizeof(char), input_length, labels) != input_length) break;
+
+            state.input_names.emplace(input_id, std::make_pair(label_length, input_name));
+        }
+    }
+}
+
+void UI::Render() {
     RenderDeviceList();
     if (state.device_debugger.shown) RenderDeviceDebugger();
 
@@ -102,85 +132,256 @@ inline void RenderDeviceList() {
     ImGui::End();
 }
 
-inline void RenderDeviceDebugger() {
-    if (ImGui::Begin("Device Debugger##device_debugger", &state.device_debugger.shown)) {
-        const hid_device_info *devices = HID::GlobalDeviceManager.get_devices();
+void RenderDeviceDebugger(const hid_device_info *device) {
+    ImGui::PushID(device);
+    
+    auto dev = HID::GlobalDeviceManager.get_device(device);
 
-        for (auto device = devices; device; device = device->next) {
-            char device_name[512];
-            sprintf_s(device_name, "%ls ##%s", device->product_string, device->path);
+    ImGui::TableNextRow();
 
-            if (ImGui::TreeNode(device_name)) {
-                
-                if (ImGui::TreeNode("Device Info")) {
-                    if (ImGui::BeginTable("device_info", 2, ImGuiTableFlags_RowBg | ImGuiTableFlags_Borders | ImGuiTableFlags_Resizable )) {
-                        KV_PAIR("Vendor ID", "0x%04x", device->vendor_id);
-                        KV_PAIR("Product ID", "0x%04x", device->product_id);
-                        KV_PAIR("Manufacturer String", "%ls", device->manufacturer_string);
-                        KV_PAIR("Product String", "%ls", device->product_string);
-                        KV_PAIR("Serial Number", "%ls", device->serial_number);
-                        KV_PAIR("Path", "%s", device->path);
-                        KV_PAIR("Usage Page", "0x%04x", device->usage_page);
-                        KV_PAIR("Usage", "0x%04x", device->usage);
-                        KV_PAIR("Interface #", "0x%04x", device->interface_number);
-                        KV_PAIR("Release #", "0x%04x", device->release_number)
-                        ImGui::EndTable();   
+    ImGui::TableSetColumnIndex(0);
+    ImGui::AlignTextToFramePadding();
+
+    bool open = ImGui::TreeNode(device, "Device: %x", (void*)device);
+
+    ImGui::TableSetColumnIndex(1);
+    ImGui::Text("%ls", device->product_string);
+
+    if (open) {
+        ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_Leaf
+            | ImGuiTreeNodeFlags_NoTreePushOnOpen
+            | ImGuiTreeNodeFlags_Bullet;
+
+        ImGui::TableNextRow();
+        ImGui::TableSetColumnIndex(0);
+        ImGui::AlignTextToFramePadding();
+        ImGui::TreeNodeEx("manufacturer", flags, "Manufacturer String");
+        ImGui::TableSetColumnIndex(1);
+        ImGui::SetNextItemWidth(-FLT_MIN);
+        ImGui::Text("%ls", device->manufacturer_string);
+
+        ImGui::TableNextRow();
+        ImGui::TableSetColumnIndex(0);
+        ImGui::AlignTextToFramePadding();
+        ImGui::TreeNodeEx("product_name", flags, "Product String");
+        ImGui::TableSetColumnIndex(1);
+        ImGui::SetNextItemWidth(-FLT_MIN);
+        ImGui::Text("%ls", device->product_string);
+
+        ImGui::TableNextRow();
+        ImGui::TableSetColumnIndex(0);
+        ImGui::AlignTextToFramePadding();
+        ImGui::TreeNodeEx("vendor_id", flags, "Vendor ID");
+        ImGui::TableSetColumnIndex(1);
+        ImGui::SetNextItemWidth(-FLT_MIN);
+        ImGui::Text("0x%04x", device->vendor_id);
+
+        ImGui::TableNextRow();
+        ImGui::TableSetColumnIndex(0);
+        ImGui::AlignTextToFramePadding();
+        ImGui::TreeNodeEx("vendor_id", flags, "Product ID");
+        ImGui::TableSetColumnIndex(1);
+        ImGui::SetNextItemWidth(-FLT_MIN);
+        ImGui::Text("0x%04x", device->product_id);
+
+        ImGui::TableNextRow();
+        ImGui::TableSetColumnIndex(0);
+        ImGui::AlignTextToFramePadding();
+
+        if (ImGui::TreeNode("Report Descriptor")) {
+            ImGui::TableNextRow();
+            ImGui::TableSetColumnIndex(0);
+            ImGui::AlignTextToFramePadding();
+
+            auto descriptor = HID::Descriptor::parse(dev->report_descriptor.data, dev->report_descriptor.length);
+
+            if (ImGui::TreeNode("Inputs")) {
+
+                for (auto& input : descriptor.inputs) {
+                    uint64_t input_id = INPUT_ID(device->vendor_id, device->product_id, input.report_id, input.report_index);
+                    auto def = HID::Descriptor::find_usage_definition(input.usage_page, input.usage_id);
+                    auto it = state.input_names.find(input_id);
+
+                    char *label = def.name;
+
+                    if (it != state.input_names.end()) {
+                        label = it->second.second;
                     }
-                    ImGui::TreePop();
-                }
-                
-                if (ImGui::TreeNode("Report Descriptor")) {
-                    auto dev = HID::GlobalDeviceManager.get_device(device);
 
-                    if (ImGui::TreeNode("View")) {
-                        auto desc = HID::Descriptor::parse(dev->report_descriptor.data, dev->report_descriptor.length);
-                        
-                        if (ImGui::TreeNode("Inputs")) {
-                            
-                            for ( auto input : desc.inputs ) {
-                                char label[64];
+                    ImGui::TableNextRow();
+                    ImGui::TableSetColumnIndex(0);
+                    ImGui::AlignTextToFramePadding();
+                    bool open = ImGui::TreeNode((void*)input_id, "Input");
 
-                                sprintf(label, "%04x/%04x", input.usage_page, input.usage_id);
-                                if (ImGui::TreeNodeEx(label, ImGuiTreeNodeFlags_DefaultOpen)) {
-                                    auto def = HID::Descriptor::find_usage_definition(input.usage_page, input.usage_id);
+                    ImGui::TableSetColumnIndex(1);
+                    ImGui::Text("%s (%04x,%04x) \"%s\"", def.name, input.usage_page, input.usage_id, label);
 
-                                    ImGui::Text("Name: %s", def.name);
-                                    ImGui::Text("Offset: %04x", input.report_index);
-                                    ImGui::Text("Size: %d", input.report_size);
+                    if (open) {
 
-                                    ImGui::TreePop();
-                                }
+                        ImGui::TableNextRow();
+                        ImGui::TableSetColumnIndex(0);
+                        ImGui::AlignTextToFramePadding();
+                        ImGui::TreeNodeEx("report_id", flags, "Report ID");
+                        ImGui::TableSetColumnIndex(1);
+                        ImGui::SetNextItemWidth(-FLT_MIN);
+                        ImGui::Text("%d", input.report_id);
+
+                        ImGui::TableNextRow();
+                        ImGui::TableSetColumnIndex(0);
+                        ImGui::AlignTextToFramePadding();
+                        ImGui::TreeNodeEx("report_index", flags, "Report Offset (Bits)");
+                        ImGui::TableSetColumnIndex(1);
+                        ImGui::SetNextItemWidth(-FLT_MIN);
+                        ImGui::Text("%d", input.report_index);
+
+                        ImGui::TableNextRow();
+                        ImGui::TableSetColumnIndex(0);
+                        ImGui::AlignTextToFramePadding();
+                        ImGui::TreeNodeEx("report_size", flags, "Report Size (Bits)");
+                        ImGui::TableSetColumnIndex(1);
+                        ImGui::SetNextItemWidth(-FLT_MIN);
+                        ImGui::Text("%d", input.report_size);
+
+                        ImGui::TableNextRow();
+                        ImGui::TableSetColumnIndex(0);
+                        ImGui::AlignTextToFramePadding();
+                        ImGui::TreeNodeEx("usage_page", flags, "Usage Page");
+                        ImGui::TableSetColumnIndex(1);
+                        ImGui::SetNextItemWidth(-FLT_MIN);
+                        ImGui::Text("0x%04x", input.usage_page);
+
+                        ImGui::TableNextRow();
+                        ImGui::TableSetColumnIndex(0);
+                        ImGui::AlignTextToFramePadding();
+                        ImGui::TreeNodeEx("usage_page", flags, "Usage ID");
+                        ImGui::TableSetColumnIndex(1);
+                        ImGui::SetNextItemWidth(-FLT_MIN);
+                        ImGui::Text("%s (0x%04x)", def.name, input.usage_id);
+
+                        ImGui::TableNextRow();
+                        ImGui::TableSetColumnIndex(0);
+                        ImGui::AlignTextToFramePadding();
+
+                        bool showFlags = ImGui::TreeNode("Flags");
+                        ImGui::TableSetColumnIndex(1);
+                        ImGui::SetNextItemWidth(-FLT_MIN);
+                        ImGui::Text("%d", input.properties.size());
+
+                        if (showFlags) {
+                            for (auto flag : input.properties) {
+                                ImGui::TableNextRow();
+                                ImGui::TableSetColumnIndex(1);
+                                ImGui::AlignTextToFramePadding();
+                                ImGui::Text("%d", flag);
                             }
 
                             ImGui::TreePop();
                         }
 
-                        ImGui::TreePop();
-                    }
 
-                    if (ImGui::TreeNode("Save to File")) {
-                        static char filePath[256];
-                        ImGui::InputText("File Path", filePath, 256);
-                        if (ImGui::SmallButton("Save")) {
-                            FILE *file = fopen(filePath, "w");
-                            fwrite(dev->report_descriptor.data, sizeof(unsigned char), dev->report_descriptor.length, file);
-                            fclose(file);
-
-                            if (ImGui::BeginPopup("hid_report_saved", ImGuiWindowFlags_Popup)) {
-                                ImGui::Text("Saved Report to %s", filePath);
-                                ImGui::EndPopup();
-                            }
+                        if (it == state.input_names.end()) {
+                            uint8_t buffer_sz = label_length;
+                            char *buffer = (char*)malloc(buffer_sz);
+                            memset(buffer, 0, buffer_sz);
+                            state.input_names.emplace(input_id, std::make_pair(buffer_sz, buffer));
                         }
-                        ImGui::TreePop();
-                    }
 
-                    ImGui::TreePop();
+                        auto label = state.input_names[input_id];
+
+                        ImGui::TableNextRow();
+                        ImGui::TableSetColumnIndex(0);
+                        ImGui::AlignTextToFramePadding();
+                        ImGui::TreeNodeEx("label", flags, "Custom Label");
+                        ImGui::TableSetColumnIndex(1);
+                        ImGui::SetNextItemWidth(-FLT_MIN);
+                        ImGui::InputText("x", label.second, label.first);
+
+                        ImGui::TreePop(); 
+                    }
                 }
 
                 ImGui::TreePop();
             }
+
+            if (ImGui::TreeNode("Save Report")) {
+                ImGui::TableNextRow();
+                ImGui::TableSetColumnIndex(0);
+                ImGui::AlignTextToFramePadding();
+                ImGui::TreeNodeEx("report_file_path", flags, "File Path");
+                ImGui::TableSetColumnIndex(1);
+                ImGui::SetNextItemWidth(-FLT_MIN);
+                ImGui::InputText("", state.save_path, 256);
+
+                ImGui::TreePop();
+                ImGui::TableNextRow();
+                ImGui::TableSetColumnIndex(1);
+                ImGui::AlignTextToFramePadding();
+                ImGui::SetNextItemWidth(-FLT_MIN);
+
+                if (ImGui::Button("Save") ) {
+                    FILE *file = fopen(state.save_path, "w");
+                    fwrite(dev->report_descriptor.data, sizeof(unsigned char), dev->report_descriptor.length, file);
+                    fclose(file);
+                }
+            }
+
+            ImGui::TreePop();   
         }
+
+        ImGui::TreePop();
+    }
+
+    ImGui::PopID();
+}
+
+static void RenderDeviceDebugger() {
+    ImGui::SetNextWindowSize(ImVec2(800, 600), ImGuiCond_FirstUseEver);
+
+    if (ImGui::Begin("Device Debugger##device_debugger", &state.device_debugger.shown)) {
+
+        ImVec2 button_sz = ImGui::GetWindowSize();
+        button_sz.y = 16;
+        button_sz.x -= 16;
         
+        if (ImGui::Button("Save Labels", button_sz)) {
+            FILE *file = fopen("labels.dat", "w");
+            for (auto [id, label] : state.input_names) {
+                uint8_t length = strnlen(label.second, label.first);
+
+                if (length > 0) {
+                    fwrite(&id, sizeof(uint64_t), 1, file);
+                    fwrite(&length, sizeof(uint8_t), 1, file);
+                    fwrite(label.second, sizeof(char), length, file);
+                }
+            }
+
+            fclose(file);
+        }
+
+        const hid_device_info *devices = HID::GlobalDeviceManager.get_devices();
+
+        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(2,2));
+
+        ImGuiTableFlags flags = ImGuiTableFlags_BordersOuter
+            | ImGuiTableFlags_Resizable
+            | ImGuiTableFlags_RowBg
+            | ImGuiTableFlags_ScrollY;
+
+        if (ImGui::BeginTable("##device_debugger_table", 2, flags)) {
+            ImGui::TableSetupScrollFreeze(0, 1);
+            ImGui::TableSetupColumn("Property");
+            ImGui::TableSetupColumn("Value");
+            ImGui::TableHeadersRow();
+
+            for(auto device = devices; device; device = device->next) {
+                RenderDeviceDebugger(device);
+            }
+
+            ImGui::EndTable();
+        }
+
+        ImGui::PopStyleVar();
+
     }
     ImGui::End();
 }
@@ -190,6 +391,9 @@ inline void RenderDevice(const hid_device_info *device, bool *open) {
     static char title[256];
     const ImGuiWindowFlags flags = ImGuiWindowFlags_NoSavedSettings;
     sprintf_s(title, "%ls #%d ##%p", device->product_string, device->interface_number, (void*)device);
+
+    uint64_t device_id = (device->vendor_id << 16 | device->product_id);
+    device_id <<= 32;
 
     if (ImGui::Begin(title, open, flags)) {
         const HID::DeviceInfo *dev = HID::GlobalDeviceManager.get_device(device);
@@ -210,28 +414,29 @@ inline void RenderDevice(const hid_device_info *device, bool *open) {
             }
 
             if (ImGui::CollapsingHeader("Input Graphs")) {
-                auto w = ImGui::GetWindowSize().x - 128;
+                auto w = ImGui::GetWindowSize().x - 192;
                 w = w > 256 ? w : 256;
                 auto desc = HID::Descriptor::parse(dev->report_descriptor.data, dev->report_descriptor.length);
 
                 for (auto input : desc.inputs) {
+                    uint64_t input_id = device_id | (input.report_id << 16) | (uint16_t)input.report_index;
+
                     float *series = HID::GlobalDeviceManager.get_input_series(device, &input);
 
                     auto def = HID::Descriptor::find_usage_definition(input.usage_page, input.usage_id);
                     
                     if (input.report_size == 1) {
                         ImGui::PlotHistogram(
-                            fmt::format("{}\n{:#04x}", def.name, input.usage_id).c_str(), // Label
+                            fmt::format("{:#16x}", input_id).c_str(), // Label
                             series,                                                       // Series Data,
                             HID::NUM_BUFFERS,                                             // Series Length
                             dev->current_buffer,                                          // Series Offset,
-                            fmt::format("{:05.0f}", series[dev->current_buffer]).c_str(), // Overlay text
-                            0,                                                            // input.min_value,                                              // Minimum Value
+                            "",
+                            0,                                                            // Minimum Value
                             1,
-                            ImVec2(w, 48.0f)                                              // Graph Size
+                            ImVec2(w, 16.0f)                                              // Graph Size
                         );
                     } else {
-
                         ImGui::PlotLines(
                             fmt::format("{}\n{:#04x}", def.name, input.usage_id).c_str(), // Label
                             series,                                                       // Series Data,
@@ -239,7 +444,7 @@ inline void RenderDevice(const hid_device_info *device, bool *open) {
                             dev->current_buffer,                                          // Series Offset,
                             fmt::format("{:05.0f}", series[dev->current_buffer]).c_str(), // Overlay text
                             0,                                                            // input.min_value,                                              // Minimum Value
-                            1 << (input.report_size),                                       // input.max_value,                                              // Maximum Value
+                            1 << (input.report_size),                                     // input.max_value,                                              // Maximum Value
                             ImVec2(w, 48.0f)                                              // Graph Size
                         );
                     }

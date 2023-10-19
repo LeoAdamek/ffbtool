@@ -142,6 +142,9 @@ namespace HID {
             value_sz = input->report_size / 8;
         }
 
+        // If the report ID isn't zero, then the value is one byte further along...
+        if (input->report_id != 0) ++value_slot;
+
         for (size_t i = 0; i < NUM_BUFFERS; i++) {
             int value = 0;
 

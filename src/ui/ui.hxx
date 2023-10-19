@@ -11,6 +11,7 @@ namespace UI {
     bool InitializeBackend();
     void TeardownBackend();
 
+    void Setup();
     void Loop();
     void Render();
 
