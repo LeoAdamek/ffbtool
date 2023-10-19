@@ -4,9 +4,11 @@
 #include <map>
 #include <thread>
 
+#include <assert.h>
+#include <wchar.h>
+
 #include <fmt/format.h>
 #include <fmt/chrono.h>
-#include <wchar.h>
 
 #include <hidapi.h>
 
@@ -16,6 +18,18 @@
 #else
     #include <unistd.h>
 #endif
+
+
+/**
+ * Get the size from a value
+ * If the value is 3 then the item size is 4
+ * Else the item size is the value.
+ * 
+ * HID Value sizes can only be: 1, 2, or 4 (which is given by the value 3 :Z)
+ */
+#define HID_ITEM_SIZE(V) ((uint8_t)V) == 3U ? 4 : (uint8_t)V
+
+const auto processor_count = std::thread::hardware_concurrency();
 
 namespace HID {
 
@@ -45,19 +59,29 @@ namespace HID {
         //devices = hid_enumerate(0x16d0, 0x0d60);
         devices = hid_enumerate(0x00, 0x00);
 
+        auto i = 0;
+        std::vector<std::vector<DeviceInfo*>> device_map(processor_count);
+        
         for (auto device = devices; device; device = device->next) {
             hid_device *handle = hid_open_path(device->path);
             DeviceInfo *dev = (DeviceInfo*)malloc(sizeof(DeviceInfo));
 
+            hid_set_nonblocking(handle, 1);
             dev->device = handle;
             dev->current_buffer = 0;
+
+            dev->report_descriptor.length = hid_get_report_descriptor(handle, dev->report_descriptor.data, sizeof(dev->report_descriptor.data));
 
             handles.emplace(device->path, dev);
 
             dev->buffers = (DeviceBuffer*)calloc(NUM_BUFFERS, sizeof(DeviceBuffer));
             memset(dev->buffers, 0, NUM_BUFFERS * sizeof(DeviceBuffer));
+            
+            device_map.at(i % processor_count).push_back(dev);
+        }
 
-            readers.emplace_back(std::thread(&DeviceManager::readLoop, this, dev));
+        for (auto group : device_map) {
+            readers.emplace_back(std::thread(&DeviceManager::readLoop, this, group));
         }
 
         initialized = true;
@@ -88,23 +112,86 @@ namespace HID {
         } 
 
         auto d = newest - oldest;
-
-        //fmt::print("Update Period: {:}", d);
     }
 
-    void DeviceManager::readLoop(DeviceInfo *device) {
+    const DeviceInfo* DeviceManager::get_device(const hid_device_info *device) {
+        std::map<char*, DeviceInfo*>::iterator it = handles.find(device->path);
+        return it->second;
+    }
+
+    float* DeviceManager::get_input_series(const hid_device_info *device, const Descriptor::Input *input) {
+       std::map<char*, DeviceInfo*>::iterator it = handles.find(device->path);
+
+        if (it == handles.end()) {
+            return {};
+        }
+
+        DeviceInfo *dev = it->second;
+
+        float *values = (float*)malloc(NUM_BUFFERS * sizeof(float));
+        memset(values, 0, NUM_BUFFERS * sizeof(float));
+
+        // Input sizes and indices are given as bits rather than bytes.
+
+        size_t value_slot = input->report_index / 8;
+        uint8_t bit_offset = input->report_index % 8;
+
+        size_t value_sz = 1; 
+        
+        if (input->report_size >= 8) {
+            value_sz = input->report_size / 8;
+        }
+
+        for (size_t i = 0; i < NUM_BUFFERS; i++) {
+            int value = 0;
+
+            switch(value_sz) {
+                case 4:
+                    value = *(uint32_t*)(dev->buffers[i].buffer + value_slot);
+                    break;
+                case 2:
+                    value = *(uint16_t*)(dev->buffers[i].buffer +value_slot);
+                    break;
+                case 1:
+                    value = dev->buffers[i].buffer[value_slot];
+                    break;
+                default:
+                    memcpy(&value, dev->buffers[i].buffer + value_slot, value_sz);
+            }
+
+            if (bit_offset != 0) {
+                value >>= bit_offset;
+            }
+
+            if (input->report_size < 8) {
+                // TODO: Bit mask the non-required bytes
+                uint8_t mask = 0xFF >> (8 - input->report_size);
+                value &= mask;
+            }
+            
+            values[i] = (float)value;
+        }
+
+        return values; 
+    }
+
+    void DeviceManager::readLoop(std::vector<DeviceInfo*> devices) {
         while(true) {
-            auto next_tick = std::chrono::steady_clock::now() + std::chrono::microseconds(1667);
+            auto next_tick = std::chrono::steady_clock::now() + std::chrono::microseconds( SAMPLE_INTERVAL );
 
-            auto next_buffer = device->current_buffer + 1;
-            if (next_buffer >= NUM_BUFFERS) next_buffer = 0;
+            for (auto device : devices) {
+                auto next_buffer = device->current_buffer + 1;
+                if (next_buffer >= NUM_BUFFERS) next_buffer = 0;
 
-            DeviceBuffer *n = &(device->buffers[next_buffer]);
+                DeviceBuffer *n = &(device->buffers[next_buffer]);
 
-            n->length = hid_read_timeout(device->device, n->buffer, HID::BUFFER_SIZE, 500);
-            n->lru = std::chrono::system_clock::now();
+                n->length = hid_read(device->device, n->buffer, HID::BUFFER_SIZE);
+                n->lru = std::chrono::system_clock::now();
 
-            if (n->length > 0) {
+                if (n->length < 1) {
+                    // If the read timed out, copy the data from the previous buffer
+                    memcpy(n, &(device->buffers[device->current_buffer]), sizeof(DeviceBuffer));
+                }
 
                 device->current_buffer = next_buffer;
             }
@@ -112,4 +199,5 @@ namespace HID {
             std::this_thread::sleep_until(next_tick);
         }
     }
+
 }

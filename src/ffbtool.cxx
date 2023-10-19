@@ -10,7 +10,7 @@ int main(const int argc, const char **argv) {
         UI::Loop();
     }
 
-    std::terminate();
+    //std::terminate();
 
     return 0;
 }

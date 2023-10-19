@@ -7,6 +7,7 @@
 
 #include "ui.hxx"
 #include "../hid.hxx"
+#include "../hid_descriptor.hxx"
 #include "imgui/imgui.h"
 
 #define KV_PAIR(label, fmt, ...) \
@@ -17,7 +18,7 @@
 
 inline void RenderHex(const char *data, size_t dataSz);
 
-static struct {
+struct {
     struct {
         bool imgui_demo;
         bool imgui_debug;
@@ -60,7 +61,7 @@ inline void RenderDeviceList() {
     ImGuiViewport *vp = ImGui::GetMainViewport();
     static ImGuiWindowFlags flags = NULL;
 
-    if (ImGui::Begin("Device List", &state.device_list.shown, flags)) {
+    if (ImGui::Begin("Device List##device_list", &state.device_list.shown, flags)) {
 
         if (ImGui::BeginMainMenuBar()) {
             if (ImGui::BeginMenu("Devices")) {
@@ -78,12 +79,16 @@ inline void RenderDeviceList() {
         }
 
         ImVec2 wsz = ImGui::GetWindowSize();
+        ImVec2 button_sz = ImVec2((wsz.x/2)-8, 16);
 
-        if (ImGui::Button("Open All", ImVec2(wsz.y, 16))) {
-            for (auto s : state.shown_devices) {
-                s.second = true;
-            }
+        if (ImGui::Button("Open All", button_sz)) {
+            for (auto& [_, v] : state.shown_devices) v = true;
         }
+        ImGui::SameLine();
+        if (ImGui::Button("Close All", button_sz)) {
+            for (auto & [_, v] : state.shown_devices) v = false;
+        }
+
 
         for (auto device = HID::GlobalDeviceManager.get_devices(); device; device = device->next) {
             char label[512];
@@ -98,7 +103,7 @@ inline void RenderDeviceList() {
 }
 
 inline void RenderDeviceDebugger() {
-    if (ImGui::Begin("Device Debugger", &state.device_debugger.shown)) {
+    if (ImGui::Begin("Device Debugger##device_debugger", &state.device_debugger.shown)) {
         const hid_device_info *devices = HID::GlobalDeviceManager.get_devices();
 
         for (auto device = devices; device; device = device->next) {
@@ -123,9 +128,57 @@ inline void RenderDeviceDebugger() {
                     }
                     ImGui::TreePop();
                 }
+                
+                if (ImGui::TreeNode("Report Descriptor")) {
+                    auto dev = HID::GlobalDeviceManager.get_device(device);
+
+                    if (ImGui::TreeNode("View")) {
+                        auto desc = HID::Descriptor::parse(dev->report_descriptor.data, dev->report_descriptor.length);
+                        
+                        if (ImGui::TreeNode("Inputs")) {
+                            
+                            for ( auto input : desc.inputs ) {
+                                char label[64];
+
+                                sprintf(label, "%04x/%04x", input.usage_page, input.usage_id);
+                                if (ImGui::TreeNodeEx(label, ImGuiTreeNodeFlags_DefaultOpen)) {
+                                    auto def = HID::Descriptor::find_usage_definition(input.usage_page, input.usage_id);
+
+                                    ImGui::Text("Name: %s", def.name);
+                                    ImGui::Text("Offset: %04x", input.report_index);
+                                    ImGui::Text("Size: %d", input.report_size);
+
+                                    ImGui::TreePop();
+                                }
+                            }
+
+                            ImGui::TreePop();
+                        }
+
+                        ImGui::TreePop();
+                    }
+
+                    if (ImGui::TreeNode("Save to File")) {
+                        static char filePath[256];
+                        ImGui::InputText("File Path", filePath, 256);
+                        if (ImGui::SmallButton("Save")) {
+                            FILE *file = fopen(filePath, "w");
+                            fwrite(dev->report_descriptor.data, sizeof(unsigned char), dev->report_descriptor.length, file);
+                            fclose(file);
+
+                            if (ImGui::BeginPopup("hid_report_saved", ImGuiWindowFlags_Popup)) {
+                                ImGui::Text("Saved Report to %s", filePath);
+                                ImGui::EndPopup();
+                            }
+                        }
+                        ImGui::TreePop();
+                    }
+
+                    ImGui::TreePop();
+                }
 
                 ImGui::TreePop();
-            };
+            }
         }
         
     }
@@ -134,25 +187,68 @@ inline void RenderDeviceDebugger() {
 
 
 inline void RenderDevice(const hid_device_info *device, bool *open) {
-    char title[512];
-    sprintf_s(title, "%ls %ls #%d ##%s", device->manufacturer_string, device->product_string, device->interface_number, device->path);
-    if (ImGui::Begin(title, open)) {
-        HID::GlobalDeviceManager.get_update_rate(device);
-        const HID::DeviceBuffer *data = HID::GlobalDeviceManager.get_latest_report(device);
+    static char title[256];
+    const ImGuiWindowFlags flags = ImGuiWindowFlags_NoSavedSettings;
+    sprintf_s(title, "%ls #%d ##%p", device->product_string, device->interface_number, (void*)device);
+
+    if (ImGui::Begin(title, open, flags)) {
+        const HID::DeviceInfo *dev = HID::GlobalDeviceManager.get_device(device);
+        const HID::DeviceBuffer *data = &(dev->buffers[dev->current_buffer]);
+
         ImGui::TextUnformatted( fmt::format("Report Date: {}", data->lru).c_str() );
         ImGui::Text("Report Length: %d", data->length);
+        
+        ImGui::Text("Device Location: 0x%08x", dev);
+        ImGui::Text("Current Report Index: %3d", dev->current_buffer);
+        ImGui::Text("Current Report Location: 0x%08x", data);
         ImGui::Spacing();
 
-        if (ImGui::CollapsingHeader("Raw Data")) RenderHex((const char*)data->buffer, data->length);
-
-        ImGui::NewLine();
-
-        if (ImGui::CollapsingHeader("Value Series")) {
-            for (auto i = 0; i < data->length; i++) {
-                int value = (int)data->buffer[i] | (int)(data->buffer[++i]) << 8;
-
-                ImGui::SliderInt(fmt::format("{:04x}", i).c_str(), &value, 0, 0xFFFF, "%05d", ImGuiSliderFlags_NoInput);
+        if (data->length >= 0) {
+            if (ImGui::CollapsingHeader("Raw Data")) { 
+                RenderHex((const char*)data->buffer, data->length);
+                ImGui::NewLine();
             }
+
+            if (ImGui::CollapsingHeader("Input Graphs")) {
+                auto w = ImGui::GetWindowSize().x - 128;
+                w = w > 256 ? w : 256;
+                auto desc = HID::Descriptor::parse(dev->report_descriptor.data, dev->report_descriptor.length);
+
+                for (auto input : desc.inputs) {
+                    float *series = HID::GlobalDeviceManager.get_input_series(device, &input);
+
+                    auto def = HID::Descriptor::find_usage_definition(input.usage_page, input.usage_id);
+                    
+                    if (input.report_size == 1) {
+                        ImGui::PlotHistogram(
+                            fmt::format("{}\n{:#04x}", def.name, input.usage_id).c_str(), // Label
+                            series,                                                       // Series Data,
+                            HID::NUM_BUFFERS,                                             // Series Length
+                            dev->current_buffer,                                          // Series Offset,
+                            fmt::format("{:05.0f}", series[dev->current_buffer]).c_str(), // Overlay text
+                            0,                                                            // input.min_value,                                              // Minimum Value
+                            1,
+                            ImVec2(w, 48.0f)                                              // Graph Size
+                        );
+                    } else {
+
+                        ImGui::PlotLines(
+                            fmt::format("{}\n{:#04x}", def.name, input.usage_id).c_str(), // Label
+                            series,                                                       // Series Data,
+                            HID::NUM_BUFFERS,                                             // Series Length
+                            dev->current_buffer,                                          // Series Offset,
+                            fmt::format("{:05.0f}", series[dev->current_buffer]).c_str(), // Overlay text
+                            0,                                                            // input.min_value,                                              // Minimum Value
+                            1 << (input.report_size),                                       // input.max_value,                                              // Maximum Value
+                            ImVec2(w, 48.0f)                                              // Graph Size
+                        );
+                    }
+
+                    free(series);
+                }
+            }
+        } else {
+            ImGui::TextColored(ImVec4(0.6f, 0.3f, 0.3f, 1.0f), "Error Reading from Device");
         }
     }
     ImGui::End();

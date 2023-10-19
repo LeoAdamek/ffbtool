@@ -32,6 +32,9 @@ target_link_libraries(ffbtool PRIVATE hidapi::hidapi hidapi::include)
 find_package(fmt CONFIG REQUIRED)
 target_link_libraries(ffbtool PRIVATE fmt::fmt)
 
+find_package(Boost REQUIRED COMPONENTS graph)
+target_link_libraries(ffbtool PRIVATE Boost::boost Boost::graph)
+
 if (WIN32) 
     # Add the winAPI adapter for HIDAPI
     target_link_libraries(ffbtool PRIVATE hidapi::winapi)
