@@ -15,6 +15,7 @@ file(
     "src/ui/imgui/imgui_widgets.cpp"
     "src/ui/imgui/imgui_tables.cpp"
     "src/ui/imgui/imgui_demo.cpp"
+    "src/widgets/*.cxx"
     "src/*.cxx"
 )
 

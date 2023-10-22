@@ -69,14 +69,18 @@ namespace HID {
             hid_set_nonblocking(handle, 1);
             dev->device = handle;
             dev->current_buffer = 0;
-
             dev->report_descriptor.length = hid_get_report_descriptor(handle, dev->report_descriptor.data, sizeof(dev->report_descriptor.data));
+
+            auto descriptor = Descriptor::parse(dev->report_descriptor.data, dev->report_descriptor.length);
+
+            // Find the total number of reports, and how big they need to be
+
 
             handles.emplace(device->path, dev);
 
             dev->buffers = (DeviceBuffer*)calloc(NUM_BUFFERS, sizeof(DeviceBuffer));
             memset(dev->buffers, 0, NUM_BUFFERS * sizeof(DeviceBuffer));
-            
+
             device_map.at(i % processor_count).push_back(dev);
         }
 
@@ -119,7 +123,7 @@ namespace HID {
         return it->second;
     }
 
-    float* DeviceManager::get_input_series(const hid_device_info *device, const Descriptor::Input *input) {
+    float* DeviceManager::get_input_series(const hid_device_info *device, const Descriptor::Node *input) {
        std::map<char*, DeviceInfo*>::iterator it = handles.find(device->path);
 
         if (it == handles.end()) {
@@ -132,7 +136,6 @@ namespace HID {
         memset(values, 0, NUM_BUFFERS * sizeof(float));
 
         // Input sizes and indices are given as bits rather than bytes.
-
         size_t value_slot = input->report_index / 8;
         uint8_t bit_offset = input->report_index % 8;
 

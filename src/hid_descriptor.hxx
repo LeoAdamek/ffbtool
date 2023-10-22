@@ -75,14 +75,6 @@ namespace HID {
             // const char *name;
         } UsageDef;
 
-        enum class UnitType : uint8_t {
-            NONE,
-            SI_LINEAR,
-            SI_ANGULAR,
-            IMPERIAL_LINEAR,
-            IMPERIAL_ANGULAR
-        };
-
         typedef enum ReportItemType {
             MAIN_ITEM = 0,
             GLOBAL_ITEM = 4,
@@ -166,12 +158,12 @@ namespace HID {
             BufferedBytes = 1 << 8
         };
 
-        typedef struct {
+        typedef struct Node {
             UsagePage usage_page;
             uint16_t report_id;
             uint32_t usage_id;
             uint32_t designator_index;
-            uint32_t string_index;
+             int32_t string_index;
             uint32_t delimiter;
 
             // The size of the report data, in bits.
@@ -182,27 +174,25 @@ namespace HID {
 
             int32_t min_value;
             int32_t max_value;
-            std::vector<InputProperty> properties;
-        } Input;
 
-        typedef struct OutputFeature {
-            UsagePage usage_page;
-            uint16_t report_id;
-            uint32_t usage_id;
-            uint32_t designator_index;
-            uint32_t string_index;
-            uint32_t delimiter;
-            std::vector<OutputProperty> properties;
-        } Output, Feature;
+            int32_t physical_min;
+            int32_t physical_max;
+            uint8_t unit_exp;
+        } Node;
 
         class Descriptor {
             public:
-                std::vector<Input> inputs;
+                std::vector<Node> inputs;
+                std::vector<Node> outputs;
+                std::vector<Node> features;
         };
 
         Descriptor parse(const unsigned char *buffer, size_t buffer_sz);
 
         UsageDef find_usage_definition(uint16_t usage_page, uint16_t usage_id);
+
+        const char *physical_min(const Node *node);
+        const char *physical_max(const Node *node);
 
         /**
          * A big list of all the usage definition ranges

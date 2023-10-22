@@ -1,8 +1,8 @@
 #pragma once
 
 #include <stdint.h>
-#include "../imgui/imgui.h"
+#include "../ui/imgui/imgui.h"
 
 namespace Widgets {
-    void POVHat(const char *id, const uint8_t value, const ImVec2 size);
+    void POVHat(const void *id, const uint8_t value, const float radius);
 }

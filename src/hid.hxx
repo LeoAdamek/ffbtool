@@ -75,7 +75,7 @@ namespace HID {
             /**
              * 
              */
-            float* get_input_series(const hid_device_info *device, const Descriptor::Input *input);
+            float* get_input_series(const hid_device_info *device, const Descriptor::Node *input);
         private:
 
             /**

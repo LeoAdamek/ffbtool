@@ -48,7 +48,7 @@ namespace HID {
         );
 
         void local_item (uint8_t tag, int32_t data, LocalParams *state);
-        void input      (Descriptor *d, uint8_t data_sz, int32_t data, GlobalParams params, LocalParams *local);
+        void node      (Descriptor *d, uint8_t data_sz, int32_t data, GlobalParams params, LocalParams *local, MainItemTag type);
 
         Descriptor parse(const unsigned char *buffer, size_t buffer_sz) {
             size_t idx = 0;
@@ -129,9 +129,10 @@ namespace HID {
 
             switch (tag) {
                 case MainItemTag::INPUT:
-                    input(d, data_sz, data, params, local);
                 case MainItemTag::OUTPUT:
                 case MainItemTag::FEATURE:
+                    node(d, data_sz, data, params, local, (MainItemTag)tag);
+                    break;
                 case MainItemTag::COLLECTION:
                     collection_depth++;
                     break;
@@ -152,19 +153,29 @@ namespace HID {
             }
         }
 
-        void input(Descriptor *d, uint8_t data_sz, int32_t data, GlobalParams params, LocalParams *local) {
+        void node(Descriptor *d, uint8_t data_sz, int32_t data, GlobalParams params, LocalParams *local, MainItemTag tag) {
             int32_t report_count = params[GlobalItemTag::REPORT_COUNT],
                     report_id = params[GlobalItemTag::REPORT_ID],
                     report_size = params[GlobalItemTag::REPORT_SIZE],
                     logical_min = params[GlobalItemTag::LOGICAL_MINIMUM],
-                    logical_max = params[GlobalItemTag::LOGICAL_MAXIMUM];
+                    logical_max = params[GlobalItemTag::LOGICAL_MAXIMUM],
+                    physical_min = params[GlobalItemTag::PHYSICAL_MINIMUM],
+                    physical_max = params[GlobalItemTag::PHYSICAL_MAXIMUM],
+                    units = params[GlobalItemTag::UNIT],
+                    unit_exp = params[GlobalItemTag::UNIT_EXPONENT];
 
-            auto usage_min_it = local->find(LocalItemTag::UsageMin);
-            auto usage_max_it = local->find(LocalItemTag::UsageMax);
+            auto usage_min_it = local->find(LocalItemTag::UsageMin),
+                 usage_max_it = local->find(LocalItemTag::UsageMax),
+                 string_min_it = local->find(LocalItemTag::StringMin),
+                 string_max_it = local->find(LocalItemTag::StringMax);
 
             uint16_t usage_id = 0,
                      usage_min = 0,
                      usage_max = 0;
+
+            uint16_t string_id = 0,
+                    string_min = 0,
+                    string_max = 0;
 
             if (usage_min_it != local->end() && usage_max_it != local->end()) {
                 if (!usage_min_it->second.empty() && !usage_max_it->second.empty()) {
@@ -172,6 +183,15 @@ namespace HID {
                     usage_min = (uint16_t) usage_min_it->second.back();
                     usage_max_it->second.pop_back();
                     usage_min_it->second.pop_back();
+                }
+            }
+
+            if (string_min_it != local->end() && usage_max_it != local->end()) {
+                if (!string_max_it->second.empty() && string_min_it->second.empty()) {
+                    string_max = string_id = (uint16_t) string_max_it->second.back();
+                    string_min = (uint16_t) string_min_it->second.back();
+                    string_min_it->second.pop_back();
+                    string_max_it->second.pop_back();
                 }
             }
 
@@ -189,37 +209,45 @@ namespace HID {
                     }
                 }
 
-                Input v = {
+                if (string_max && string_min) {
+                    string_id--;
+                } else {
+                    auto str = local->find(LocalItemTag::StringIndex);
+                    if (str != local->end()) {
+                        string_id = str->second.back();
+                        str->second.pop_back();
+                    } else {
+                        string_id = 0xffff;
+                    }
+                }
+                        
+
+                Node v = {
                     .usage_page = (UsagePage)params[GlobalItemTag::USAGE_PAGE],
                     .report_id = (uint16_t)report_id,
                     .usage_id = usage_id,
+                    .string_index = string_id,
                     .report_size = (uint8_t)report_size,
                     .report_index = index,
                     .min_value = logical_min,
                     .max_value = logical_max,
+                    .physical_min = physical_min,
+                    .physical_max = physical_max,
                 };
 
-                index += report_size;
-
-                for (auto b = 0; b <= 8; b++) {
-                    if (data & (1<<b)) {
-                        v.properties.push_back(InputProperty(b));
-                    }
+                switch(tag) {
+                    case MainItemTag::INPUT:
+                        d->inputs.push_back(v);
+                        break;
+                    case MainItemTag::OUTPUT:
+                        d->outputs.push_back(v);
+                        break;
+                    case MainItemTag::FEATURE:
+                        d->features.push_back(v);
+                        break;
                 }
 
-                UsageDef def = find_usage_definition(v.usage_page, v.usage_id);
-
-                LOG (
-                    "Input<Page: {:#04x}, ReportID: {}, UsageID: {:#04x}, Size: {}, Index: {:#04x}>: {}",
-                    (uint16_t)v.usage_page,
-                    v.report_id,
-                    v.usage_id,
-                    v.report_size,
-                    v.report_index,
-                    def.name
-                );
-
-                d->inputs.push_back(v);
+                index += report_size;
             }
         }
 
@@ -241,6 +269,15 @@ namespace HID {
             }
 
             return { UNDEFINED, 0x00, 0xFFFF, NULL, "UNDEFINED" };
+        }
+
+        const char *physical_min(const Node *node) {
+
+            return NULL;            
+        }
+
+        const char *physical_max(const Node *node) {
+            return NULL;
         }
     }
 }
